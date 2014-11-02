@@ -5,9 +5,12 @@ import json
 from uuid import uuid4
 from os import environ
 from StringIO import StringIO
+from urlparse import urlparse
 from os.path import dirname, join, splitext
 from csv import DictReader
 from glob import glob
+
+from httmock import response, HTTMock
 
 from openaddr import cache, conform, jobs, S3, process
 
@@ -34,6 +37,13 @@ class TestOA (unittest.TestCase):
     
     def tearDown(self):
         shutil.rmtree(self.testdir)
+    
+    def response_content(self, url, request):
+        
+        _, host, path, _, _, _ = urlparse(url.geturl())
+        
+        if host == 'example.com':
+            raise NotImplementedError(host, path)
     
     def test_parallel(self):
         process.process(self.s3, self.src_dir, 'test')
