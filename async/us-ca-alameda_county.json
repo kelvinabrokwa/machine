@@ -1,0 +1,29 @@
+{
+    "coverage": {
+        "US Census": {
+            "geoid": "06001",
+            "name": "Alameda County",
+            "state": "California"
+        },
+        "country": "us",
+        "state": "ca",
+        "county": "Alameda"
+    },
+    "data": "http://s3.amazonaws.com/data-test.openaddresses.io/sources/us-ca-alameda_county-excerpt.zip",
+    "license": "http://www.acgov.org/acdata/terms.htm",
+    "year": "",
+    "type": "http",
+    "compression": "zip",
+    "cache": "http://s3.amazonaws.com/data-test.openaddresses.io/20141119/us-ca-alameda_county-2baba3c9f2e94f24a6119710f3f7c516.zip",
+    "conform": {
+        "merge": [
+            "feanme",
+            "featyp"
+        ],
+        "lon": "x",
+        "lat": "y",
+        "number": "st_num",
+        "street": "auto_street",
+        "type": "shapefile"
+    }
+}

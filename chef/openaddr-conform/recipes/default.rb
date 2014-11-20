@@ -3,8 +3,8 @@ package 'nodejs'
 package 'npm'
 
 git '/var/opt/openaddresses-conform' do
-  repository 'https://github.com/openaddresses/openaddresses-conform.git'
-  reference 'machine-ready'
+  repository 'https://github.com/sbma44/openaddresses-conform.git'
+  reference 'async-tests-refactor'
 end
 
 # One package used here is tetchy about node vs. nodejs
