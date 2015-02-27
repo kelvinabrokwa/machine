@@ -1,10 +1,14 @@
+from __future__ import absolute_import, division, print_function
+from .compat import standard_library
+
 import json
 from csv import DictReader
-from StringIO import StringIO
+from io import BytesIO
 from operator import itemgetter
 from os.path import join, dirname, splitext
 from dateutil.parser import parse as parse_datetime
 from os import environ
+from re import compile
 
 from jinja2 import Environment, FileSystemLoader
 from requests import get
@@ -14,7 +18,7 @@ from . import S3, paths
 def load_states(s3):
     # Find existing cache information
     state_key = s3.get_key('state.txt')
-    states, counts = list(), dict(processed=0, cached=0, sources=0)
+    states, counts = list(), dict(processed=0, cached=0, sources=0, addresses=0)
 
     if state_key:
         state_link = state_key.get_contents_as_string()
@@ -24,7 +28,7 @@ def load_states(s3):
     
     if state_key:
         last_modified = parse_datetime(state_key.last_modified)
-        state_file = StringIO(state_key.get_contents_as_string())
+        state_file = BytesIO(state_key.get_contents_as_string())
         
         for row in DictReader(state_file, dialect='excel-tab'):
             row['shortname'], _ = splitext(row['source'])
@@ -40,6 +44,7 @@ def load_states(s3):
             counts['sources'] += 1
             counts['cached'] += 1 if row['cache'] else 0
             counts['processed'] += 1 if row['processed'] else 0
+            counts['addresses'] += int(row['address count'] or 0)
 
             with open(join(paths.sources, row['source'])) as file:
                 data = json.load(file)
@@ -78,15 +83,27 @@ def load_states(s3):
     
     return last_modified, states, counts
 
+def nice_integer(number):
+    ''' Format a number like '999,999,999'
+    '''
+    string = str(number)
+    pattern = compile(r'^(\d+)(\d\d\d)\b')
+    
+    while pattern.match(string):
+        string = pattern.sub(r'\1,\2', string)
+    
+    return string
+
 def main():
-    s3 = S3(environ['AWS_ACCESS_KEY_ID'], environ['AWS_SECRET_ACCESS_KEY'], 'openaddresses-cfa')
-    print summarize(s3).encode('utf8')
+    s3 = S3(environ['AWS_ACCESS_KEY_ID'], environ['AWS_SECRET_ACCESS_KEY'], 'data-test.openaddresses.io')
+    print(summarize(s3).encode('utf8'))
 
 def summarize(s3):
     ''' Return summary HTML.
     '''
     env = Environment(loader=FileSystemLoader(join(dirname(__file__), 'templates')))
     env.filters['tojson'] = lambda value: json.dumps(value, ensure_ascii=False)
+    env.filters['nice_integer'] = nice_integer
     template = env.get_template('state.html')
 
     last_modified, states, counts = load_states(s3)

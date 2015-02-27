@@ -1,16 +1,17 @@
 OA Machine
 ==========
 
-In-progress scripts for running OpenAddresses on a complete data set and publishing
-the results. Uses [openaddresses](https://github.com/openaddresses/openaddresses),
-[openaddresses-conform](https://github.com/openaddresses/openaddresses-conform),
-and other components of OpenAddresses to work.
+Scripts for running OpenAddresses on a complete data set and publishing
+the results. Uses [OpenAddresses](https://github.com/openaddresses/openaddresses)
+data sources to work.
 
 Status
 ------
 
 This code is being used to process the complete OA dataset on an expected-weekly
 basis, with output visible at [data.openaddresses.io](http://data.openaddresses.io).
+
+[![Build Status](https://travis-ci.org/openaddresses/machine.svg?branch=master)](https://travis-ci.org/openaddresses/machine)
 
 Installation scripts for preparing a fresh install of Ubuntu 14.04 can be found
 in `chef`. Run them from a Git checkout like this:
@@ -40,10 +41,7 @@ Development
 -----------
 
 Modify the contents of [`openaddr/paths.py`](openaddr/paths.py) with locations
-of your local [openaddresses](https://github.com/openaddresses/openaddresses),
-[openaddresses-conform](https://github.com/openaddresses/openaddresses-conform),
-[openaddresses-cache](https://github.com/openaddresses/openaddresses-cache),
-and other components of OpenAddresses.
+of your local [openaddresses](https://github.com/openaddresses/openaddresses).
 
 Test the OpenAddresses machine with `test.py`:
 
@@ -51,4 +49,11 @@ Test the OpenAddresses machine with `test.py`:
 
 Run the complete process from the `openaddr` module:
 
-    python -m openaddr.process -a <AWS key> -s <AWS secret> -l <log> data.openaddresses.io
+    python -m openaddr.process_all -a <AWS key> -s <AWS secret> -l <log> data.openaddresses.io
+
+Extras
+------
+
+Convert remote ESRI feature services to GeoJSON with `openaddr-esri2geojson`:
+
+    openaddr-esri2geojson <ESRI URL> <GeoJSON path>

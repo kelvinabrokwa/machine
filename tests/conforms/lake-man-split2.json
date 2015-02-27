@@ -1,0 +1,13 @@
+{
+    "data": "http://fake-web/lake-man-split2",
+    "cache": "http://fake-cache/lake-man-split2.json",
+    "type": "ESRI",
+    "conform": {
+        "lon": "x",
+        "lat": "y",
+        "split": "MAILSTREET",
+        "number": "auto_number",
+        "street": "auto_street",
+        "type": "geojson"
+    }
+}

@@ -168,7 +168,8 @@
 <body>
 <p>
     This is a summary view of <a href="http://openaddresses.io">OpenAddresses data</a>.
-    It was generated <span class="stat">{{ last_modified.strftime('%A, %b %d, %Y') }}</span>.
+    <a href="/openaddresses-complete.zip" class="stat">{{ counts.addresses|nice_integer }} addresses</a>
+    were processed <span class="stat">{{ last_modified.strftime('%A, %b %d, %Y') }}</span>.
     Out of <span class="stat">{{ counts.sources }} total sources</span>,
     <a href="#first-processed" class="stat">{{ counts.processed }} were completed</a>.
     <span class="stat">{{ counts.sources - counts.cached }} sources failed cache</span>,

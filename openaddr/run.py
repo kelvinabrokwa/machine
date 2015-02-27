@@ -1,13 +1,34 @@
+import logging; _L = logging.getLogger('openaddr.run')
+
 from os import environ
-from logging import getLogger
 from os.path import join, dirname
 from argparse import ArgumentParser
+from operator import attrgetter
+from itertools import groupby
 from time import time, sleep
 
 from . import jobs
 from boto.ec2 import EC2Connection
 from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType
-from requests import get
+
+def get_bid_amount(ec2, instance_type):
+    ''' Get a bid estimate for a given instance type.
+    
+        Returns median price + $0.01 for the cheapest AWS availability zone.
+    '''
+    history = ec2.get_spot_price_history(instance_type=instance_type)
+
+    get_az = attrgetter('availability_zone')
+    median = 1.00
+    
+    for (zone, zone_history) in groupby(sorted(history, key=get_az), get_az):
+        zone_prices = [h.price for h in zone_history]
+        zone_median = sorted(zone_prices)[len(zone_prices)/2]
+
+        _L.debug('Median ${:.4f}/hour in {} zone'.format(zone_median, zone))
+        median = min(median, zone_median)
+    
+    return median + 0.01
 
 parser = ArgumentParser(description='Run some source files.')
 
@@ -48,7 +69,7 @@ def main():
     with open(join(dirname(__file__), 'templates', 'user-data.sh')) as file:
         user_data = file.read().format(**args.__dict__)
     
-    getLogger('openaddr').info('Prepared {} bytes of instance user data'.format(len(user_data)))
+    _L.info('Prepared {} bytes of instance user data'.format(len(user_data)))
 
     #
     # Figure out how much we're willing to bid on a spot instance.
@@ -56,17 +77,14 @@ def main():
     ec2_access_key = args.ec2_access_key or environ.get('EC2_ACCESS_KEY_ID', args.access_key)
     ec2_secret_key = args.ec2_secret_key or environ.get('EC2_SECRET_ACCESS_KEY', args.secret_key)
     ec2 = EC2Connection(ec2_access_key, ec2_secret_key)
-
-    history = ec2.get_spot_price_history(instance_type=args.instance_type)
-    median = sorted([h.price for h in history])[len(history)/2]
-    bid = median + .01
-
-    getLogger('openaddr').info('Bidding ${:.4f}/hour for {} instance'.format(bid, args.instance_type))
+    
+    bid = get_bid_amount(ec2, args.instance_type)
+    _L.info('Bidding ${:.4f}/hour for {} instance'.format(bid, args.instance_type))
     
     #
-    # Request a spot instance with 99GB storage.
+    # Request a spot instance with 200GB storage.
     #
-    device_sda1 = BlockDeviceType(size=99, delete_on_termination=True)
+    device_sda1 = BlockDeviceType(size=200, delete_on_termination=True)
     device_map = BlockDeviceMapping(); device_map['/dev/sda1'] = device_sda1
     
     spot_args = dict(instance_type=args.instance_type, user_data=user_data,
@@ -75,7 +93,7 @@ def main():
 
     spot_req = ec2.request_spot_instances(bid, args.machine_image, **spot_args)[0]
 
-    getLogger('openaddr').info('https://console.aws.amazon.com/ec2/v2/home?region=us-east-1#SpotInstances:search={}'.format(spot_req.id))
+    _L.info('https://console.aws.amazon.com/ec2/v2/home?region=us-east-1#SpotInstances:search={}'.format(spot_req.id))
     
     #
     # Wait while EC2 does its thing, unless the user interrupts.
@@ -95,9 +113,9 @@ def main():
 def wait_it_out(spot_req, due):
     ''' Wait for EC2 to finish its work.
     '''
-    ec2, logger = spot_req.connection, getLogger('openaddr')
+    ec2 = spot_req.connection
 
-    logger.info('Settling in for the long wait, up to {:.0f} hours.'.format((due - time()) / 3600))
+    _L.info('Settling in for the long wait, up to {:.0f} hours.'.format((due - time()) / 3600))
     
     while True:
         sleep(15)
@@ -105,7 +123,7 @@ def wait_it_out(spot_req, due):
         if time() > due:
             raise RuntimeError('Out of time')
         elif spot_req.state == 'open':
-            logger.debug('Spot request {} is open'.format(spot_req.id))
+            _L.debug('Spot request {} is open'.format(spot_req.id))
         else:
             break
     
@@ -120,7 +138,7 @@ def wait_it_out(spot_req, due):
         elif spot_req.instance_id:
             break
         else:
-            logger.debug('Waiting for instance ID')
+            _L.debug('Waiting for instance ID')
     
     while True:
         sleep(5)
@@ -130,9 +148,9 @@ def wait_it_out(spot_req, due):
         elif instance.public_dns_name:
             break
         else:
-            logger.debug('Waiting for instance DNS name')
+            _L.debug('Waiting for instance DNS name')
 
-    logger.info('Found instance {} at {}'.format(instance.id, instance.public_dns_name))
+    _L.info('Found instance {} at {}'.format(instance.id, instance.public_dns_name))
 
     while True:
         sleep(60)
@@ -140,12 +158,12 @@ def wait_it_out(spot_req, due):
         if time() > due:
             raise RuntimeError('Out of time')
         elif instance.state == 'terminated':
-            logger.debug('Instance {} has been terminated'.format(instance.id))
+            _L.debug('Instance {} has been terminated'.format(instance.id))
             break
         else:
-            logger.debug('Waiting for instance {} to do its work'.format(instance.id))
+            _L.debug('Waiting for instance {} to do its work'.format(instance.id))
 
-    logger.info('Job complete')
+    _L.info('Job complete')
 
 if __name__ == '__main__':
     exit(main())

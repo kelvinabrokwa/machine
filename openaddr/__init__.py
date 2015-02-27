@@ -1,153 +1,59 @@
-from subprocess import Popen
+from __future__ import absolute_import, division, print_function
+import logging; _L = logging.getLogger('openaddr')
+
+from .compat import standard_library
+
 from tempfile import mkdtemp
 from os.path import realpath, join, basename, splitext, exists, dirname, abspath
 from shutil import copy, move, rmtree
-from mimetypes import guess_extension
-from StringIO import StringIO
-from logging import getLogger
 from datetime import datetime
 from os import mkdir, environ
-from time import sleep, time
-from zipfile import ZipFile
-from urlparse import urlparse
-from httplib import HTTPConnection
+from urllib.parse import urlparse
 import json
 
 from osgeo import ogr
-from requests import get
 from boto import connect_s3
 from .sample import sample_geojson
 from . import paths
 
-geometry_types = {
-    ogr.wkbPoint: 'Point',
-    ogr.wkbPoint25D: 'Point 2.5D',
-    ogr.wkbLineString: 'LineString',
-    ogr.wkbLineString25D: 'LineString 2.5D',
-    ogr.wkbLinearRing: 'LinearRing',
-    ogr.wkbPolygon: 'Polygon',
-    ogr.wkbPolygon25D: 'Polygon 2.5D',
-    ogr.wkbMultiPoint: 'MultiPoint',
-    ogr.wkbMultiPoint25D: 'MultiPoint 2.5D',
-    ogr.wkbMultiLineString: 'MultiLineString',
-    ogr.wkbMultiLineString25D: 'MultiLineString 2.5D',
-    ogr.wkbMultiPolygon: 'MultiPolygon',
-    ogr.wkbMultiPolygon25D: 'MultiPolygon 2.5D',
-    ogr.wkbGeometryCollection: 'GeometryCollection',
-    ogr.wkbGeometryCollection25D: 'GeometryCollection 2.5D',
-    ogr.wkbUnknown: 'Unknown'
-    }
+from .cache import (
+    CacheResult,
+    compare_cache_details,
+    DownloadTask,
+    URLDownloadTask,
+)
+
+from .conform import (
+    ConformResult,
+    DecompressionTask,
+    ExcerptDataTask,
+    ConvertToCsvTask,
+)
 
 with open(join(dirname(__file__), 'VERSION')) as file:
     __version__ = file.read().strip()
 
-class CacheResult:
-    cache = None
-    fingerprint = None
-    version = None
-    elapsed = None
-    output = None
-    
-    def __init__(self, cache, fingerprint, version, elapsed, output):
-        self.cache = cache
-        self.fingerprint = fingerprint
-        self.version = version
-        self.elapsed = elapsed
-        self.output = output
-    
-    @staticmethod
-    def empty():
-        return CacheResult(None, None, None, None, None)
-
-    def todict(self):
-        return dict(cache=self.cache, fingerprint=self.fingerprint, version=self.version)
-
-class ConformResult:
-    processed = None
-    path = None
-    elapsed = None
-    output = None
-
-    def __init__(self, processed, path, elapsed, output):
-        self.processed = processed
-        self.path = path
-        self.elapsed = elapsed
-        self.output = output
-    
-    @staticmethod
-    def empty():
-        return ConformResult(None, None, None, None)
-
-    def todict(self):
-        return dict(processed=self.processed, path=self.path)
-
-class ExcerptResult:
-    sample_data = None
-    geometry_type = None
-
-    def __init__(self, sample_data, geometry_type):
-        self.sample_data = sample_data
-        self.geometry_type = geometry_type
-    
-    @staticmethod
-    def empty():
-        return ExcerptResult(None, None)
-
-    def todict(self):
-        return dict(sample_data=self.sample_data)
-
 class S3:
-    bucketname = None
+    _bucket = None
 
     def __init__(self, key, secret, bucketname):
         self._key, self._secret = key, secret
         self.bucketname = bucketname
-        self._bucket = connect_s3(key, secret).get_bucket(bucketname)
     
-    def toenv(self):
-        env = dict(environ)
-        env.update(AWS_ACCESS_KEY_ID=self._key, AWS_SECRET_ACCESS_KEY=self._secret)
-        return env
+    def _make_bucket(self):
+        if not self._bucket:
+            connection = connect_s3(self._key, self._secret)
+            self._bucket = connection.get_bucket(self.bucketname)
     
     def get_key(self, name):
+        self._make_bucket()
         return self._bucket.get_key(name)
     
     def new_key(self, name):
+        self._make_bucket()
         return self._bucket.new_key(name)
 
-class LocalResponse:
-    ''' Fake local response for a file:// request.
-    '''
-    _path = None
-    url = None
-
-    def __init__(self, path):
-        '''
-        '''
-        self._path = path
-        self.url = 'file://' + abspath(path)
-    
-    def iter_content(self, chunksize):
-        '''
-        '''
-        with open(self._path) as file:
-            while True:
-                chunk = file.read(chunksize)
-                if not chunk:
-                    break
-                yield chunk
-
-def get_cached_data(url):
-    ''' Wrapper for HTTP request to cached data.
-    '''
-    scheme, _, path, _, _, _ = urlparse(url)
-    
-    if scheme == 'file':
-        return LocalResponse(path)
-    
-    return get(url, stream=True)
-
-def cache(srcjson, destdir, extras, s3=False):
+def cache(srcjson, destdir, extras):
     ''' Python wrapper for openaddress-cache.
     
         Return a CacheResult object:
@@ -157,275 +63,116 @@ def cache(srcjson, destdir, extras, s3=False):
           version: data version as date?
           elapsed: elapsed time as timedelta object
           output: subprocess output as string
+        
+        Creates and destroys a subdirectory in destdir.
     '''
     start = datetime.now()
     source, _ = splitext(basename(srcjson))
-    workdir = mkdtemp(prefix='cache-')
-    logger = getLogger('openaddr')
-    tmpjson = _tmp_json(workdir, srcjson, extras)
-
+    workdir = mkdtemp(prefix='cache-', dir=destdir)
+    
+    with open(srcjson, 'r') as src_file:
+        data = json.load(src_file)
+        data.update(extras)
+    
     #
-    # Run openaddresses-cache from a fresh working directory.
     #
-    errpath = join(destdir, source+'-cache.stderr')
-    outpath = join(destdir, source+'-cache.stdout')
-    st_path = join(destdir, source+'-cache.status')
+    #
+    source_urls = data.get('data')
+    if not isinstance(source_urls, list):
+        source_urls = [source_urls]
 
-    with open(errpath, 'w') as stderr, open(outpath, 'w') as stdout:
-        index_js = join(paths.cache, 'index.js')
-        logger.debug('openaddresses-cache {0} {1}'.format(tmpjson, workdir))
-        
-        if s3:
-            cmd_args = dict(cwd=workdir, env=s3.toenv(), stderr=stderr, stdout=stdout)
-            cmd = Popen(('node', index_js, tmpjson, workdir, s3.bucketname), **cmd_args)
-        else:
-            cmd_args = dict(cwd=workdir, env=environ, stderr=stderr, stdout=stdout)
-            cmd = Popen(('node', index_js, tmpjson, workdir), **cmd_args)
+    task = DownloadTask.from_type_string(data.get('type'), source)
+    downloaded_files = task.download(source_urls, workdir)
 
-        _wait_for_it(cmd, 7200)
-
-        with open(st_path, 'w') as file:
-            file.write(str(cmd.returncode))
-
-    logger.debug('{0} --> {1}'.format(source, workdir))
-
-    with open(tmpjson) as file:
-        data = json.load(file)
+    # FIXME: I wrote the download stuff to assume multiple files because
+    # sometimes a Shapefile fileset is splayed across multiple files instead
+    # of zipped up nicely. When the downloader downloads multiple files,
+    # we should zip them together before uploading to S3 instead of picking
+    # the first one only.
+    filepath_to_upload = abspath(downloaded_files[0])
     
     #
     # Find the cached data and hold on to it.
     #
-    for ext in ('.json', '.zip'):
-        cache_name = source+ext
-        if exists(join(workdir, cache_name)):
-            resultdir = join(destdir, 'cached')
-            if not exists(resultdir):
-                mkdir(resultdir)
-            move(join(workdir, cache_name), join(resultdir, cache_name))
-            if 'cache' not in data:
-                data['cache'] = 'file://' + join(resultdir, cache_name)
-            break
+    resultdir = join(destdir, 'cached')
+    data['cache'], data['fingerprint'] \
+        = compare_cache_details(filepath_to_upload, resultdir, data)
 
     rmtree(workdir)
-    
-    with open(st_path) as status, open(errpath) as err, open(outpath) as out:
-        args = status.read().strip(), err.read().strip(), out.read().strip()
-        output = '{}\n\nSTDERR:\n\n{}\n\nSTDOUT:\n\n{}\n'.format(*args)
 
     return CacheResult(data.get('cache', None),
                        data.get('fingerprint', None),
                        data.get('version', None),
-                       datetime.now() - start,
-                       output)
+                       datetime.now() - start)
 
-def conform(srcjson, destdir, extras, s3=False):
+def conform(srcjson, destdir, extras):
     ''' Python wrapper for openaddresses-conform.
     
         Return a ConformResult object:
 
           processed: URL of processed data CSV
           path: local path to CSV of processed data
+          geometry_type: typically Point or Polygon
           elapsed: elapsed time as timedelta object
           output: subprocess output as string
+        
+        Creates and destroys a subdirectory in destdir.
     '''
     start = datetime.now()
     source, _ = splitext(basename(srcjson))
-    workdir = mkdtemp(prefix='conform-')
-    logger = getLogger('openaddr')
-    tmpjson = _tmp_json(workdir, srcjson, extras)
+    workdir = mkdtemp(prefix='conform-', dir=destdir)
+    
+    with open(srcjson, 'r') as src_file:
+        data = json.load(src_file)
+        data.update(extras)
     
     #
-    # When running without S3, the cached data might be a local path.
+    # The cached data will be a local path.
     #
     scheme, _, cache_path, _, _, _ = urlparse(extras.get('cache', ''))
     if scheme == 'file':
         copy(cache_path, workdir)
 
-    #
-    # Run openaddresses-conform from a fresh working directory.
-    #
-    # It tends to error silently and truncate data if it finds any existing
-    # data. Also, it wants to be able to write a file called ./tmp.csv.
-    #
-    errpath = join(destdir, source+'-conform.stderr')
-    outpath = join(destdir, source+'-conform.stdout')
-    st_path = join(destdir, source+'-conform.status')
+    source_urls = data.get('cache')
+    if not isinstance(source_urls, list):
+        source_urls = [source_urls]
 
-    with open(errpath, 'w') as stderr, open(outpath, 'w') as stdout:
-        index_js = join(paths.conform, 'index.js')
-        logger.debug('openaddresses-conform {0} {1}'.format(tmpjson, workdir))
+    task1 = URLDownloadTask(source)
+    downloaded_path = task1.download(source_urls, workdir)
+    _L.info("Downloaded to %s", downloaded_path)
 
-        if s3:
-            cmd_args = dict(cwd=workdir, env=s3.toenv(), stderr=stderr, stdout=stdout)
-            cmd = Popen(('node', index_js, tmpjson, workdir, s3.bucketname), **cmd_args)
-        else:
-            cmd_args = dict(cwd=workdir, env=environ, stderr=stderr, stdout=stdout)
-            cmd = Popen(('node', index_js, tmpjson, workdir), **cmd_args)
+    task2 = DecompressionTask.from_type_string(data.get('compression'))
+    decompressed_paths = task2.decompress(downloaded_path, workdir)
+    _L.info("Decompressed to %d files", len(decompressed_paths))
 
-        _wait_for_it(cmd, 7200)
+    task3 = ExcerptDataTask()
+    try:
+        encoding = data.get('conform', {}).get('encoding', False)
+        data_sample, geometry_type = task3.excerpt(decompressed_paths, workdir, encoding)
+        _L.info("Sampled %d records", len(data_sample))
+    except Exception as e:
+        _L.warning("Error doing excerpt; skipping", exc_info=True)
+        data_sample = None
+        geometry_type = None
 
-        with open(st_path, 'w') as file:
-            file.write(str(cmd.returncode))
+    task4 = ConvertToCsvTask()
+    try:
+        csv_path, addr_count = task4.convert(data, decompressed_paths, workdir)
+        _L.info("Converted to %s with %d addresses", csv_path, addr_count)
+    except Exception as e:
+        _L.warning("Error doing conform; skipping", exc_info=True)
+        csv_path, addr_count = None, 0
 
-    logger.debug('{0} --> {1}'.format(source, workdir))
+    out_path = None
+    if csv_path is not None and exists(csv_path):
+        move(csv_path, join(destdir, 'out.csv'))
+        out_path = realpath(join(destdir, 'out.csv'))
 
-    #
-    # Move resulting files to destination directory.
-    #
-    zip_path = join(destdir, source+'.zip')
-    csv_path = join(destdir, source+'.csv')
-    
-    if exists(join(workdir, source+'.zip')):
-        move(join(workdir, source+'.zip'), zip_path)
-        logger.debug(zip_path)
-
-    if exists(join(workdir, source, 'out.csv')):
-        move(join(workdir, source, 'out.csv'), csv_path)
-        logger.debug(csv_path)
-
-    with open(tmpjson) as file:
-        data = json.load(file)
-        
     rmtree(workdir)
-    
-    with open(st_path) as status, open(errpath) as err, open(outpath) as out:
-        args = status.read().strip(), err.read().strip(), out.read().strip()
-        output = '{}\n\nSTDERR:\n\n{}\n\nSTDOUT:\n\n{}\n'.format(*args)
 
     return ConformResult(data.get('processed', None),
-                         (realpath(csv_path) if exists(csv_path) else None),
-                         datetime.now() - start,
-                         output)
-
-def excerpt(srcjson, destdir, extras, s3=False):
-    ''' 
-    '''
-    start = datetime.now()
-    source, _ = splitext(basename(srcjson))
-    workdir = mkdtemp(prefix='excerpt-')
-    logger = getLogger('openaddr')
-    tmpjson = _tmp_json(workdir, srcjson, extras)
-
-    #
-    sample_data = None
-    got = get_cached_data(extras['cache'])
-    _, ext = splitext(got.url)
-    
-    if not ext:
-        ext = guess_extension(got.headers['content-type'])
-    
-    cachefile = join(workdir, 'cache'+ext)
-    
-    if ext == '.zip':
-        logger.debug('Downloading all of {cache}'.format(**extras))
-
-        with open(cachefile, 'w') as file:
-            for chunk in got.iter_content(1024**2):
-                file.write(chunk)
-    
-        zf = ZipFile(cachefile, 'r')
-        
-        for name in zf.namelist():
-            _, ext = splitext(name)
-            
-            if ext in ('.shp', '.shx', '.dbf'):
-                with open(join(workdir, 'cache'+ext), 'w') as file:
-                    file.write(zf.read(name))
-        
-        if exists(join(workdir, 'cache.shp')):
-            ds = ogr.Open(join(workdir, 'cache.shp'))
-        else:
-            ds = None
-    
-    elif ext == '.json':
-        logger.debug('Downloading part of {cache}'.format(**extras))
-
-        scheme, host, path, query, _, _ = urlparse(got.url)
-        
-        if scheme in ('http', 'https'):
-            conn = HTTPConnection(host, 80)
-            conn.request('GET', path + ('?' if query else '') + query)
-            resp = conn.getresponse()
-        elif scheme == 'file':
-            with open(path) as rawfile:
-                resp = StringIO(rawfile.read(1024*1024))
-        else:
-            raise RuntimeError('Unsure what to do with {}'.format(got.url))
-        
-        with open(cachefile, 'w') as file:
-            file.write(sample_geojson(resp, 10))
-    
-        ds = ogr.Open(cachefile)
-    
-    else:
-        ds = None
-    
-    if ds:
-        layer = ds.GetLayer(0)
-        defn = layer.GetLayerDefn()
-        field_count = defn.GetFieldCount()
-        sample_data = [[defn.GetFieldDefn(i).name for i in range(field_count)]]
-        geometry_type = geometry_types.get(defn.GetGeomType(), None)
-        
-        for feature in layer:
-            sample_data += [[feature.GetField(i) for i in range(field_count)]]
-            
-            if len(sample_data) == 6:
-                break
-        
-        #
-        # Close it like in
-        # http://trac.osgeo.org/gdal/wiki/PythonGotchas#Savingandclosingdatasetsdatasources
-        #
-        defn = None
-        layer = None
-        ds = None
-    
-    rmtree(workdir)
-    
-    if s3:
-        dir = datetime.now().strftime('%Y%m%d')
-        key = s3.new_key(join(dir, 'samples', source+'.json'))
-        args = dict(policy='public-read', headers={'Content-Type': 'text/json'})
-        key.set_contents_from_string(json.dumps(sample_data, indent=2), **args)
-        sample_url = 'http://s3.amazonaws.com/{}/{}'.format(s3.bucketname, key.name)
-    
-    else:
-        with open(join(destdir, 'sample.json'), 'w') as file:
-            json.dump(sample_data, file, indent=2)
-            sample_url = 'file://' + abspath(file.name)
-    
-    return ExcerptResult(sample_url, geometry_type)
-
-def _wait_for_it(command, seconds):
-    ''' Run command for a limited number of seconds, then kill it.
-    '''
-    due = time() + seconds
-    
-    while True:
-        if command.poll() is not None:
-            # Command complete
-            break
-        
-        elif time() > due:
-            # Went overtime
-            command.kill()
-
-        else:
-            # Keep waiting
-            sleep(.5)
-
-def _tmp_json(workdir, srcjson, extras):
-    ''' Work on a copy of source JSON in a safe directory, with extras grafted in.
-    
-        Return path to the new JSON file.
-    '''
-    mkdir(join(workdir, 'source'))
-    tmpjson = join(workdir, 'source', basename(srcjson))
-
-    with open(srcjson, 'r') as src_file, open(tmpjson, 'w') as tmp_file:
-        data = json.load(src_file)
-        data.update(extras)
-        json.dump(data, tmp_file)
-    
-    return tmpjson
+                         data_sample,
+                         geometry_type,
+                         addr_count,
+                         out_path,
+                         datetime.now() - start)
