@@ -288,8 +288,17 @@ def find_source_path(source_definition, source_paths):
         # Old style ESRI conform: ESRI downloader should only give us a single cache.csv file
         return source_paths[0]
     elif conform["type"] == "csv":
-        # We don't expect to be handed a list of files
-        return source_paths[0]
+        # Return file if it's specified, else return the first file we find
+        if "file" in conform:
+            for fn in source_paths:
+                # Consider it a match if the basename matches; directory names are a mess
+                if os.path.basename(conform["file"]) == os.path.basename(fn):
+                    return fn
+            _L.warning("Conform named %s as file but we could not find it." % conform["file"])
+            return None
+        else:
+            return source_paths[0]
+
     elif conform["type"] == "xml":
         # Return file if it's specified, else return the first .gml file we find
         if "file" in conform:
@@ -640,11 +649,14 @@ def row_round_lat_lon(sd, row):
 def row_convert_to_out(sd, row):
     "Convert a row from the source schema to OpenAddresses output schema"
     # note: sd["conform"]["lat"] and lon were already applied in the extraction from source
+    postcode_key = sd['conform'].get('postcode', False)
+    
     return {
         "LON": row.get(X_FIELDNAME, None),
         "LAT": row.get(Y_FIELDNAME, None),
         "NUMBER": row.get(sd["conform"]["number"], None),
-        "STREET": row.get(sd["conform"]["street"], None)
+        "STREET": row.get(sd["conform"]["street"], None),
+        "POSTCODE": row.get(postcode_key, None) if postcode_key else None
     }
 
 ### File-level conform code. Inputs and outputs are filenames.
@@ -673,7 +685,7 @@ def extract_to_source_csv(source_definition, source_path, extract_path):
         raise Exception("Unsupported source type %s" % source_definition["conform"]["type"])
 
 # The canonical output schema for conform
-_openaddr_csv_schema = ["LON", "LAT", "NUMBER", "STREET"]
+_openaddr_csv_schema = ["LON", "LAT", "NUMBER", "STREET", "POSTCODE"]
 
 def transform_to_out_csv(source_definition, extract_path, dest_path):
     ''' Transform an extracted source CSV to the OpenAddresses output CSV by applying conform rules.
@@ -767,7 +779,7 @@ class TestConformTransforms (unittest.TestCase):
     def test_row_convert_to_out(self):
         d = { "conform": { "street": "s", "number": "n" } }
         r = row_convert_to_out(d, {"s": "MAPLE LN", "n": "123", X_FIELDNAME: "-119.2", Y_FIELDNAME: "39.3"})
-        self.assertEqual({"LON": "-119.2", "LAT": "39.3", "STREET": "MAPLE LN", "NUMBER": "123"}, r)
+        self.assertEqual({"LON": "-119.2", "LAT": "39.3", "STREET": "MAPLE LN", "NUMBER": "123", "POSTCODE": None}, r)
 
     def test_row_merge_street(self):
         d = { "conform": { "merge": [ "n", "t" ] } }
@@ -799,11 +811,11 @@ class TestConformTransforms (unittest.TestCase):
     def test_transform_and_convert(self):
         d = { "conform": { "street": "auto_street", "number": "n", "merge": ["s1", "s2"], "lon": "y", "lat": "x" } }
         r = row_transform_and_convert(d, { "n": "123", "s1": "MAPLE", "s2": "ST", X_FIELDNAME: "-119.2", Y_FIELDNAME: "39.3" })
-        self.assertEqual({"STREET": "Maple Street", "NUMBER": "123", "LON": "-119.2", "LAT": "39.3"}, r)
+        self.assertEqual({"STREET": "Maple Street", "NUMBER": "123", "LON": "-119.2", "LAT": "39.3", 'POSTCODE': None}, r)
 
         d = { "conform": { "street": "auto_street", "number": "auto_number", "split": "s", "lon": "y", "lat": "x" } }
         r = row_transform_and_convert(d, { "s": "123 MAPLE ST", X_FIELDNAME: "-119.2", Y_FIELDNAME: "39.3" })
-        self.assertEqual({"STREET": "Maple Street", "NUMBER": "123", "LON": "-119.2", "LAT": "39.3"}, r)
+        self.assertEqual({"STREET": "Maple Street", "NUMBER": "123", "LON": "-119.2", "LAT": "39.3", 'POSTCODE': None}, r)
 
     def test_row_canonicalize_street_and_number(self):
         r = row_canonicalize_street_and_number({}, {"NUMBER": "324 ", "STREET": " OAK DR."})
@@ -898,7 +910,7 @@ class TestConformCli (unittest.TestCase):
 
         with csvopen(dest_path) as fp:
             reader = csvDictReader(fp)
-            self.assertEqual(['LON', 'LAT', 'NUMBER', 'STREET'], reader.fieldnames)
+            self.assertEqual(['LON', 'LAT', 'NUMBER', 'STREET', 'POSTCODE'], reader.fieldnames)
 
             rows = list(reader)
 
@@ -1100,6 +1112,10 @@ class TestConformMisc(unittest.TestCase):
     def test_find_csv_source_path(self):
         csv_conform = {"conform": {"type": "csv"}}
         self.assertEqual("foo.csv", find_source_path(csv_conform, ["foo.csv"]))
+        csv_file_conform = {"conform": {"type": "csv", "file":"bar.txt"}}
+        self.assertEqual("bar.txt", find_source_path(csv_file_conform, ["license.pdf", "bar.txt"]))
+        self.assertEqual("aa/bar.txt", find_source_path(csv_file_conform, ["license.pdf", "aa/bar.txt"]))
+        self.assertEqual(None, find_source_path(csv_file_conform, ["foo.txt"]))
 
     def test_find_xml_source_path(self):
         c = {"conform": {"type": "xml"}}
