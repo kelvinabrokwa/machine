@@ -137,6 +137,15 @@ class TestOA (unittest.TestCase):
 
             if 'san_francisco' in source or 'alameda_county' in source or 'carson' in source:
                 self.assertTrue(bool(state['processed']), "Checking for processed in {}".format(source))
+                
+                with HTTMock(self.response_content):
+                    got = get(state['processed'])
+                    zip_file = ZipFile(BytesIO(got.content), mode='r')
+                
+                source_base, _ = splitext(source)
+                self.assertTrue(source_base + '.csv' in zip_file.namelist())
+                self.assertTrue(source_base + '.vrt' in zip_file.namelist())
+                
             else:
                 self.assertFalse(bool(state['processed']), "Checking for processed in {}".format(source))
             
@@ -216,7 +225,7 @@ class TestOA (unittest.TestCase):
             state = dict(zip(*json.load(file)))
         
         self.assertTrue(state['cache'] is not None)
-        self.assertEqual(state['fingerprint'], '4eafdbf201a68a5b8de3e05f6706829e')
+        self.assertEqual(state['fingerprint'], '3926017394c9ff4d6a68718a0a503620')
         self.assertTrue(state['processed'] is not None)
         self.assertTrue(state['sample'] is not None)
         self.assertEqual(state['geometry type'], 'Point 2.5D')
@@ -244,7 +253,7 @@ class TestOA (unittest.TestCase):
             state = dict(zip(*json.load(file)))
         
         self.assertTrue(state['cache'] is not None)
-        self.assertEqual(state['fingerprint'], '4eafdbf201a68a5b8de3e05f6706829e')
+        self.assertEqual(state['fingerprint'], '3926017394c9ff4d6a68718a0a503620')
         self.assertTrue(state['processed'] is not None)
         self.assertTrue(state['sample'] is not None)
         self.assertEqual(state['geometry type'], 'Point 2.5D')
@@ -270,7 +279,7 @@ class TestOA (unittest.TestCase):
             state = dict(zip(*json.load(file)))
         
         self.assertTrue(state['cache'] is not None)
-        self.assertEqual(state['fingerprint'], '4eafdbf201a68a5b8de3e05f6706829e')
+        self.assertEqual(state['fingerprint'], '3926017394c9ff4d6a68718a0a503620')
         self.assertTrue(state['processed'] is not None)
         self.assertTrue(state['sample'] is not None)
         self.assertEqual(state['geometry type'], 'Point 2.5D')
